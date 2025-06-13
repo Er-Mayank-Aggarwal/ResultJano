@@ -58,7 +58,7 @@ document.getElementById("roll-number-form").addEventListener("submit", async fun
   log(`➡️ Generating PDFs from ${startRoll} to ${endRoll}...`);
 
   try {
-    const response = await fetch("http://localhost:5000/", {
+    const response = await fetch("https://resultjano.onrender.com/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ startRoll, endRoll, resultName }),
