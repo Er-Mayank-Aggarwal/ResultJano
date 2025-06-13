@@ -1,0 +1,5 @@
+# .gitignore
+downloads/
+merged/
+node_modules/
+
