@@ -5,6 +5,8 @@ const puppeteer = require('puppeteer');
 const cors = require('cors');
 const axios = require('axios');
 const { mergePDFs } = require('./utils/mergePDFs.cjs');
+require("dotenv").config();
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -49,7 +51,13 @@ app.post('/', async (req, res) => {
 
   const browser = await puppeteer.launch({
     headless: 'new', // use false if you want to see browser
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    executablePath:
+      process.env.NODE_ENV === "production"
+        ? process.env.PUPPETEER_EXECUTABLE_PATH
+        : puppeteer.executablePath(),
+
+
   });
 
   const page = await browser.newPage();
