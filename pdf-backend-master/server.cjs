@@ -73,7 +73,13 @@ app.post('/', async (req, res) => {
   });
 
   const page = await browser.newPage();
+  const client = await page.createCDPSession();
+  await client.send('Page.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: downloadsDir,
+  });
 
+  console.log(`🌐 Navigating to: ${websiteURL}`);
   for (let i = startNum; i <= endNum; i++) {
     const roll = `${prefix}${i.toString().padStart(4, '0')}`;
     console.log(`➡️ Processing Roll No: ${roll}`);
