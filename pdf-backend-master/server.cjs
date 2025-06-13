@@ -12,23 +12,14 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Serve the merged PDF folder statically
-app.use('/merged', express.static(path.join(__dirname, 'merged')));
-
-// Create downloads and merged folders if they don't exist
 const downloadsDir = path.join(__dirname, 'downloads');
 const mergedDir = path.join(__dirname, 'merged');
 
-if (!fs.existsSync(downloadsDir)) {
-  fs.mkdirSync(downloadsDir);
-  console.log('📁 Created downloads folder');
-}
-if (!fs.existsSync(mergedDir)) {
-  fs.mkdirSync(mergedDir);
-  console.log('📁 Created merged folder');
-}
+app.use('/merged', express.static(mergedDir));
 
-// Utility: Clean a folder
+if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
+if (!fs.existsSync(mergedDir)) fs.mkdirSync(mergedDir);
+
 const cleanFolder = (folder) => {
   if (fs.existsSync(folder)) {
     fs.readdirSync(folder).forEach(file => {
@@ -37,27 +28,19 @@ const cleanFolder = (folder) => {
   }
 };
 
-// Utility: Download a single PDF from a URL
 const downloadPDF = async (pdfUrl, filePath) => {
   const response = await axios.get(pdfUrl, { responseType: 'arraybuffer' });
   fs.writeFileSync(filePath, response.data);
 };
 
-// Health check route
 app.get('/', (req, res) => {
   res.send('🚀 PDF backend server is running!');
 });
 
-// Favicon route to avoid unnecessary errors
-app.get('/favicon.ico', (req, res) => res.status(204));
-
-// Main POST route to handle PDF collection and merging
 app.post('/', async (req, res) => {
   const { startRoll, endRoll, websiteURL } = req.body;
-
-  if (!startRoll || !endRoll || !websiteURL) {
-    return res.status(400).json({ error: 'Missing startRoll, endRoll or websiteURL' });
-  }
+  if (!startRoll || !endRoll || !websiteURL)
+    return res.status(400).json({ error: 'Missing input fields' });
 
   const notFound = [];
   const prefix = startRoll.slice(0, startRoll.length - 4);
@@ -68,56 +51,68 @@ app.post('/', async (req, res) => {
   cleanFolder(mergedDir);
 
   const browser = await puppeteer.launch({
-    headless: false,
+    headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   const page = await browser.newPage();
+
+  // Handle prompts (e.g. "Result not found" alerts)
+  page.on('dialog', async dialog => {
+    console.log(`⚠️ Alert: ${dialog.message()}`);
+    await dialog.accept();
+  });
+
   const client = await page.createCDPSession();
   await client.send('Page.setDownloadBehavior', {
     behavior: 'allow',
     downloadPath: downloadsDir,
   });
 
-  console.log(`🌐 Navigating to: ${websiteURL}`);
   for (let i = startNum; i <= endNum; i++) {
     const roll = `${prefix}${i.toString().padStart(4, '0')}`;
-    console.log(`➡️ Processing Roll No: ${roll}`);
+    console.log(`🎯 Processing ${roll}`);
 
     try {
       await page.goto(websiteURL, { waitUntil: 'networkidle2' });
 
-      // Click the result link (customize selector if needed)
+      // Click on the result link - change if needed
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'networkidle2' }),
         page.evaluate(() => {
-          __doPostBack('dgResultUG$ctl07$lnkResultUG', ''); // 🔁 Adjust if ID changes
+          __doPostBack('dgResultUG$ctl07$lnkResultUG', '');
         }),
       ]);
 
-      // Enter roll number
       await page.waitForSelector('#txtRollNo');
       await page.evaluate(() => (document.querySelector('#txtRollNo').value = ''));
       await page.type('#txtRollNo', roll);
       await page.click('#btnGetResult');
-      console.log(`⏳ Waiting for result...`);
 
-      // Wait for result to appear
-      await page.waitForSelector('#lblName', { timeout: 4000 });
-      console.log(`✅ Result found for ${roll}`);
+      // Wait for result or alert to appear
+      try {
+        await page.waitForSelector('#lblName', { timeout: 3000 });
+      } catch {
+        console.log(`❌ Result not found for ${roll}`);
+        notFound.push(roll);
+        continue;
+      }
 
-      // Get the PDF URL
+      // Get PDF URL
       const pdfUrl = await page.evaluate(() => {
         const link = document.querySelector('a[href$=".pdf"]');
         return link ? link.href : null;
       });
 
-      if (!pdfUrl) throw new Error('PDF URL not found');
+      if (!pdfUrl) {
+        console.log(`❌ PDF link missing for ${roll}`);
+        notFound.push(roll);
+        continue;
+      }
 
-      // Download the PDF
       const pdfPath = path.join(downloadsDir, `${roll}.pdf`);
       await downloadPDF(pdfUrl, pdfPath);
-      console.log(`📄 Downloaded: ${roll}.pdf`);
+      console.log(`✅ Downloaded ${roll}.pdf`);
 
     } catch (err) {
       console.error(`❌ Failed for ${roll}: ${err.message}`);
@@ -125,30 +120,23 @@ app.post('/', async (req, res) => {
     }
   }
 
+  // ✅ Ensure all downloads finish before closing browser
+  console.log('⏳ Waiting for pending downloads...');
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
   await browser.close();
 
-  // Merge all PDFs
+  // Merge PDFs
   const mergedPath = path.join(mergedDir, 'Final_Merged.pdf');
   await mergePDFs(downloadsDir, mergedPath);
-  console.log(`✅ Merged PDF created at: ${mergedPath}`);
+  cleanFolder(downloadsDir);
 
-  // Respond with the URL and not-found list
   res.json({
-    downloadURL: '/merged/Final_Merged.pdf',
+    downloadURL: 'pdf-backend-master/merged/Final_Merged.pdf',
     notFound,
   });
 });
 
-// Global error handling
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
