@@ -20,120 +20,130 @@ app.use('/merged', express.static(mergedDir));
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 if (!fs.existsSync(mergedDir)) fs.mkdirSync(mergedDir);
 
-const cleanFolder = (folder) => {
-  if (fs.existsSync(folder)) {
-    fs.readdirSync(folder).forEach(file => {
-      fs.unlinkSync(path.join(folder, file));
-    });
-  }
+const cleanFolder = async (folder) => {
+  const files = await fs.promises.readdir(folder);
+  await Promise.all(files.map(file => fs.promises.unlink(path.join(folder, file))));
 };
 
-const downloadPDF = async (pdfUrl, filePath) => {
-  const response = await axios.get(pdfUrl, { responseType: 'arraybuffer' });
-  fs.writeFileSync(filePath, response.data);
-};
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 app.get('/', (req, res) => {
   res.send('🚀 PDF backend server is running!');
 });
 
 app.post('/', async (req, res) => {
-  const { startRoll, endRoll, websiteURL } = req.body;
-  if (!startRoll || !endRoll || !websiteURL)
+  const { startRoll, endRoll, resultName } = req.body;
+
+  if (!startRoll || !endRoll || !resultName) {
     return res.status(400).json({ error: 'Missing input fields' });
+  }
 
   const notFound = [];
   const prefix = startRoll.slice(0, startRoll.length - 4);
   const startNum = parseInt(startRoll.slice(-4));
   const endNum = parseInt(endRoll.slice(-4));
+  const websiteURL = 'https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResultDeclare.aspx';
 
-  cleanFolder(downloadsDir);
-  cleanFolder(mergedDir);
+  await cleanFolder(downloadsDir);
+  await cleanFolder(mergedDir);
 
   const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    headless: 'new', // use false if you want to see browser
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
   const page = await browser.newPage();
 
-  // Handle prompts (e.g. "Result not found" alerts)
-  page.on('dialog', async dialog => {
-    console.log(`⚠️ Alert: ${dialog.message()}`);
-    await dialog.accept();
-  });
-
   const client = await page.createCDPSession();
   await client.send('Page.setDownloadBehavior', {
     behavior: 'allow',
-    downloadPath: downloadsDir,
+    downloadPath: downloadsDir
   });
 
   for (let i = startNum; i <= endNum; i++) {
     const roll = `${prefix}${i.toString().padStart(4, '0')}`;
+    if (roll.length !== 10) {
+      console.log(`⚠️ Skipping invalid roll number (length ≠ 10): ${roll}`);
+      notFound.push(roll);
+      continue;
+    }
+
     console.log(`🎯 Processing ${roll}`);
 
     try {
-      await page.goto(websiteURL, { waitUntil: 'networkidle2' });
+      await page.goto(websiteURL, { waitUntil: 'domcontentloaded' });
 
-      // Click on the result link - change if needed
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2' }),
-        page.evaluate(() => {
-          __doPostBack('dgResultUG$ctl07$lnkResultUG', '');
-        }),
-      ]);
+      // Click on the desired result link
+      const clicked = await page.evaluate((resultName) => {
+        const links = Array.from(document.querySelectorAll('a'));
+        for (const link of links) {
+          if (link.textContent.toLowerCase().includes(resultName.toLowerCase())) {
+            link.click();
+            return true;
+          }
+        }
+        return false;
+      }, resultName);
 
-      await page.waitForSelector('#txtRollNo');
-      await page.evaluate(() => (document.querySelector('#txtRollNo').value = ''));
-      await page.type('#txtRollNo', roll);
-      await page.click('#btnGetResult');
-
-      // Wait for result or alert to appear
-      try {
-        await page.waitForSelector('#lblName', { timeout: 3000 });
-      } catch {
-        console.log(`❌ Result not found for ${roll}`);
+      if (!clicked) {
+        console.log(`❌ Result link "${resultName}" not found for ${roll}`);
         notFound.push(roll);
         continue;
       }
 
-      // Get PDF URL
-      const pdfUrl = await page.evaluate(() => {
-        const link = document.querySelector('a[href$=".pdf"]');
-        return link ? link.href : null;
+      await page.waitForNavigation({ waitUntil: 'networkidle2' });
+      await page.waitForSelector('#txtRollNo');
+
+      await page.evaluate(() => {
+        document.querySelector('#txtRollNo').value = '';
       });
 
-      if (!pdfUrl) {
-        console.log(`❌ PDF link missing for ${roll}`);
+      await page.type('#txtRollNo', roll);
+
+      let alertTriggered = false;
+
+      // Handle alert only once
+      page.once('dialog', async (dialog) => {
+        console.log(`⚠️ Alert for ${roll}: ${dialog.message()}`);
+        alertTriggered = true;
+        await dialog.accept();
+      });
+
+      await page.click('#btnGetResult');
+      await delay(1500); // Give time for alert or download
+
+      if (alertTriggered) {
+        console.log(`❌ Alert triggered for ${roll}, skipping.`);
         notFound.push(roll);
         continue;
       }
 
-      const pdfPath = path.join(downloadsDir, `${roll}.pdf`);
-      await downloadPDF(pdfUrl, pdfPath);
-      console.log(`✅ Downloaded ${roll}.pdf`);
-
+      console.log(`✅ Successfully downloaded for ${roll}`);
     } catch (err) {
-      console.error(`❌ Failed for ${roll}: ${err.message}`);
+      console.log(`❌ Error for ${roll}: ${err.message}`);
       notFound.push(roll);
     }
   }
 
-  // ✅ Ensure all downloads finish before closing browser
-  console.log('⏳ Waiting for pending downloads...');
-  await new Promise(resolve => setTimeout(resolve, 3000));
-
   await browser.close();
 
   // Merge PDFs
-  const mergedPath = path.join(mergedDir, 'Final_Merged.pdf');
-  await mergePDFs(downloadsDir, mergedPath);
-  cleanFolder(downloadsDir);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const mergedFileName = `Merged_result.pdf`;
+  const mergedPath = path.join(mergedDir, mergedFileName);
+
+  try {
+    await mergePDFs(downloadsDir, mergedPath);
+  } catch (err) {
+    console.error('❌ Failed to merge PDFs:', err.message);
+    return res.status(500).json({ error: 'PDF merging failed', notFound });
+  }
+
+  await cleanFolder(downloadsDir);
 
   res.json({
-    downloadURL: 'pdf-backend-master/merged/Final_Merged.pdf',
-    notFound,
+    downloadURL: `pdf-backend-master/merged/merged_result.pdf`,
+    notFound
   });
 });
 
