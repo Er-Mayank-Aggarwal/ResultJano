@@ -1,7 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const puppeteer = require('puppeteer');
+const chromium = require('chrome-aws-lambda');
 const cors = require('cors');
 const axios = require('axios');
 const { mergePDFs } = require('./utils/mergePDFs.cjs');
@@ -48,10 +48,12 @@ app.post('/', async (req, res) => {
   await cleanFolder(downloadsDir);
   await cleanFolder(mergedDir);
 
-  const browser = await puppeteer.launch({
-    headless: 'new', // use false if you want to see browser
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+ const browser = await chromium.puppeteer.launch({
+  args: chromium.args,
+  defaultViewport: chromium.defaultViewport,
+  executablePath: await chromium.executablePath || '/usr/bin/chromium-browser',
+  headless: chromium.headless,
+});
 
   const page = await browser.newPage();
 
