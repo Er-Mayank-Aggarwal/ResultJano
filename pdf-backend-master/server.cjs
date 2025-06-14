@@ -51,8 +51,6 @@ app.post('/', async (req, res) => {
   const browser = await puppeteer.launch({
     headless: 'new', // use false if you want to see browser
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
-
   });
 
   const page = await browser.newPage();
