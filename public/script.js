@@ -71,7 +71,7 @@ document.getElementById("roll-number-form").addEventListener("submit", async fun
   log(`📅 Academic Year: ${academicYear}, Type: ${examType}, Semester: ${semester} (${semesterType}), Branch: ${branch}`);
 
   try {
-    const response = await fetch("https://resultjano-7e1aa2c91bb0.herokuapp.com/result", {
+    const response = await fetch("/result", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
