@@ -6,7 +6,7 @@ const puppeteer = require('puppeteer');
 const { mergePDFs } = require('./utils/mergePDFs.cjs');
 
 const app = express();
-const PORT = process.env.PORT || 5002;
+const PORT = process.env.PORT || 5002; 
 
 console.log('Initializing server...');
 const downloadsBaseDir = path.join(__dirname, 'downloads');
