@@ -89,7 +89,7 @@ const createBrowser = async () => {
   return await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 };
 
-const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId) => {
+const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType) => {
   console.log(`Processing ${rolls.length} roll numbers`);
   const results = {};
   const jobDir = getJobDownloadDir(jobId);
@@ -103,21 +103,54 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
     console.log(`Navigating to ${websiteURL}`);
     await page.goto(websiteURL, { waitUntil: 'networkidle2' });
-    
-    console.log(`Clicking on ${semesterType}Sem${academicYear}`);
-    await page.click(`#link${semesterType}Sem${academicYear}`);
-    await delay(2000);
+    console.log(examType);
+    if(examType == "normal")
+    {
+      console.log('Normal exam type selected');
+      console.log(`Clicking on ${semesterType}Sem${academicYear}`);
+      await page.click(`#link${semesterType}Sem${academicYear}`);
+      await delay(2000);
+    }
+    else if(examType === "Revaluation")
+    {
 
+    }
+    else if(examType === "Makeup")
+    {
+
+    }
+    else if(examType === "Supplementary")
+    {
+
+    }
     console.log(`Attempting to find and click ${romanSemester} semester for ${branch}`);
-    const clicked = await page.evaluate((romanSem, branchName) => {
-      const links = Array.from(document.querySelectorAll('a'));
-      for (const link of links) {
-        if (link.textContent.toLowerCase().includes(romanSem.toLowerCase()) && link.textContent.toLowerCase().includes(branchName.toLowerCase())) {
-          link.click(); return true;
-        }
-      }
-      return false;
-    }, romanSemester, branch);
+
+
+const clicked = await page.evaluate((romanSem, branchName) => {
+  const links = Array.from(document.querySelectorAll('a'));
+  
+  for (const link of links) {
+    console.log(`Checking link: ${link.textContent}`);
+    
+    const text = link.textContent.toLowerCase();
+    const sem = romanSem.toLowerCase();
+    const branch = branchName.toLowerCase();
+
+    if ((romanSem === 'Ist' || romanSem === 'IInd') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
+      console.log("Clicking link for Ist/IInd semester with CBCS");
+      link.click();
+      return true;
+    } else if (text.includes(sem) && text.includes(branch)) {
+      console.log("Clicking link for other semester with branch");
+      link.click();
+      return true;
+    }
+  }
+
+  console.log("No matching link found.");
+  return false;
+}, romanSemester, branch);
+
 
     if (!clicked) {
       console.log(`Failed to find link for ${romanSemester} semester and ${branch}`);
@@ -193,7 +226,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
 app.post('/result', async (req, res) => {
   console.log('Received /result request:', req.body);
-  const { startRoll, endRoll, academicYear, semester, semesterType, branch } = req.body;
+  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType} = req.body;
   const jobId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const start = parseInt(startRoll.slice(-4));
@@ -231,7 +264,7 @@ app.post('/result', async (req, res) => {
     const websiteURL = 'https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResult.aspx';
     const romanSemester = toRomanNumeral(parseInt(semester));
     console.log(`Using roman semester: ${romanSemester}`);
-
+    let linkselector;
     await cleanFolder(mergedDir);
 
     // Generate all roll numbers first
@@ -242,7 +275,7 @@ app.post('/result', async (req, res) => {
     
     jobStore[jobId].currentStep = 'processing_rolls';
     // Process all rolls with a single page
-    await processRolls(browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId);
+    await processRolls(browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType);
 
     console.log('Closing browser');
     await browser.close();
