@@ -82,7 +82,6 @@ document
       return;
     }
 
-    logSection.classList.remove("hidden");
     const startRoll = document.getElementById("start-roll").value.trim();
     const endRoll = document.getElementById("end-roll").value.trim();
     const academicYear = document.getElementById("academic-year").value;
@@ -197,7 +196,7 @@ document
     if (existingStatusPanel) {
       existingStatusPanel.remove();
     }
-
+    logSection.classList.remove("hidden");
     log(`➡️ Submitting job from ${startRoll} to ${endRoll}...`);
 
     try {
@@ -205,7 +204,9 @@ document
       submitButton.disabled = true;
       submitButton.innerHTML =
         '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Generating...';
-
+      console.log(
+        `Submitting job with startRoll: ${startRoll}, endRoll: ${endRoll}, academicYear: ${academicYear}, semester: ${semester}, semesterType: ${semesterType}, branch: ${branch}, examType: ${examType}`
+      );
       const submitRes = await fetch("/result", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -213,10 +214,10 @@ document
           startRoll,
           endRoll,
           academicYear,
-          examType,
           semester,
           semesterType,
           branch,
+          examType
         }),
       });
 
