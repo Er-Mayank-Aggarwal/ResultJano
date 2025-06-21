@@ -140,7 +140,7 @@ const clicked = await page.evaluate((romanSem, branchName) => {
       console.log("Clicking link for Ist/IInd semester with CBCS");
       link.click();
       return true;
-    } else if (text.includes(sem) && text.includes(branch)) {
+    } else if (text.includes(sem) && text.includes(branch) && text.includes("b.e.(cbcs)")) {
       console.log("Clicking link for other semester with branch");
       link.click();
       return true;
