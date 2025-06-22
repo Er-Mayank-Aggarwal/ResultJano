@@ -88,10 +88,15 @@ document
     const examType = document.getElementById("exam-type").value;
     const semester = document.getElementById("semester").value;
     const branch = document.getElementById("branch").value;
-    const semesterType = parseInt(semester) % 2 === 0 ? "Even" : "Odd";
+
+    let semesterType = "";
     if(semester === "annual")
     {
       semesterType = "annual";
+    }
+    else
+    {
+      semesterType = parseInt(semester) % 2 === 0 ? "Even" : "Odd";
     }
 
     if (
