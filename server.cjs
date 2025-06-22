@@ -80,13 +80,13 @@ const deleteJobFolder = async (jobId) => {
 };
 
 const toRomanNumeral = num => {
-  const romanNumerals = { 1: 'Ist', 2: 'IInd', 3: 'IIIrd', 4: 'IVth', 5: 'Vth', 6: 'VIth', 7: 'VIIth', 8: 'VIIIth' };
+  const romanNumerals = { 1: 'Ist', 2: 'IInd', 3: 'IIIrd', 4: 'IVth', 5: 'Vth', 6: 'VIth', 7: 'VIIth', 8: 'VIIIth'};
   return romanNumerals[num] || num.toString();
 };
 
 const createBrowser = async () => {
   console.log('Launching Puppeteer browser');
-  return await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  return await puppeteer.launch({ headless: false, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 };
 
 const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType) => {
@@ -123,13 +123,12 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
         const startYear = year - 1;
         const endYearShort = (year % 100).toString().padStart(2, '0');
         const academicYearString = `${startYear}-${endYearShort}`;
-
         const links = Array.from(document.querySelectorAll('a'));
 
         for (const link of links) {
           console.log(`Checking link: ${link.textContent}`);
           const text = link.textContent.toLowerCase();
-
+ 
           if (text.includes(etype) &&
             text.includes(sem) &&
             text.includes(academicYearString)) {
@@ -203,13 +202,28 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       await page.type('#txtRollNo', roll);
 
       const dialogPromise = new Promise(resolve => {
+        let resolved = false;
+
         page.once('dialog', async dialog => {
-          console.log(`Dialog appeared: ${dialog.message()}`);
-          await dialog.accept();
-          resolve(true);
+          try {
+            console.log(`Dialog appeared: ${dialog.message()}`);
+            await dialog.accept();
+            resolved = true;
+            resolve(true);
+          } catch (err) {
+            console.warn('Dialog already handled or error:', err.message);
+            resolved = true;
+            resolve(false); // Safe fallback
+          }
         });
-        setTimeout(() => resolve(false), 8000);
+
+        setTimeout(() => {
+          if (!resolved) {
+            resolve(false);
+          }
+        }, 8000);
       });
+
 
       console.log(`Clicking get result button for ${roll}`);
 
@@ -296,9 +310,9 @@ app.post('/result', async (req, res) => {
 
     const browser = await createBrowser();
     const websiteURL = 'https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResult.aspx';
-    const romanSemester = toRomanNumeral(parseInt(semester));
+    const romanSemester = semester === "annual" ? "annual" : toRomanNumeral(parseInt(semester)).toLowerCase();
+
     console.log(`Using roman semester: ${romanSemester}`);
-    let linkselector;
     await cleanFolder(mergedDir);
 
     // Generate all roll numbers first
