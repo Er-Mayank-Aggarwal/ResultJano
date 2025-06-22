@@ -6,7 +6,7 @@ const puppeteer = require('puppeteer');
 const { mergePDFs } = require('./utils/mergePDFs.cjs');
 
 const app = express();
-const PORT = process.env.PORT || 5002; 
+const PORT = process.env.PORT || 5002;
 
 console.log('Initializing server...');
 const downloadsBaseDir = path.join(__dirname, 'downloads');
@@ -62,7 +62,7 @@ const cleanFolder = async folder => {
     console.log(`Folder doesn't exist, skipping cleanup: ${folder}`);
     return;
   }
-  
+
   console.log(`Cleaning folder: ${folder}`);
   const files = await fs.promises.readdir(folder);
   console.log(`Found ${files.length} files to clean`);
@@ -94,7 +94,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
   const results = {};
   const jobDir = getJobDownloadDir(jobId);
   let page;
-  
+
   try {
     page = await browser.newPage();
     console.log(`New page created for batch processing`);
@@ -104,52 +104,86 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
     console.log(`Navigating to ${websiteURL}`);
     await page.goto(websiteURL, { waitUntil: 'networkidle2' });
     console.log(examType);
-    if(examType == "normal")
-    {
+    if (examType == "normal") {
       console.log('Normal exam type selected');
       console.log(`Clicking on ${semesterType}Sem${academicYear}`);
       await page.click(`#link${semesterType}Sem${academicYear}`);
       await delay(2000);
     }
-    else if(examType === "Revaluation")
-    {
+
+    else if (examType === "reval") {
+      console.log('Revaluation exam type selected');
+
+      const clickedd = await page.evaluate((type, acadyear, semtype) => {
+        const etype = type.toLowerCase();
+        const year = parseInt(acadyear);
+        const sem = semtype.toLowerCase();
+
+        // Generate the academic year string (e.g., 2022-23 for input 2023)
+        const startYear = year - 1;
+        const endYearShort = (year % 100).toString().padStart(2, '0');
+        const academicYearString = `${startYear}-${endYearShort}`;
+
+        const links = Array.from(document.querySelectorAll('a'));
+
+        for (const link of links) {
+          console.log(`Checking link: ${link.textContent}`);
+          const text = link.textContent.toLowerCase();
+
+          if (text.includes(etype) &&
+            text.includes(sem) &&
+            text.includes(academicYearString)) {
+            // Do your stuff here
+            console.log("✅ Match found:", link.href);
+            link.click();
+            return true;
+          }
+        }
+        return false;
+      }, examType, academicYear, semesterType);
+
+      if (!clickedd) {
+        console.log(`❌ No matching revaluation link found for: ${examType} - ${academicYear} - ${semesterType}`);
+        return {};
+      }
+
+      console.log(`✅ Revaluation link clicked`);
+      await delay(2000);
+    }
+
+    else if (examType === "Makeup") {
 
     }
-    else if(examType === "Makeup")
-    {
-
-    }
-    else if(examType === "Supplementary")
-    {
+    else if (examType === "Supplementary") {
 
     }
     console.log(`Attempting to find and click ${romanSemester} semester for ${branch}`);
 
 
-const clicked = await page.evaluate((romanSem, branchName) => {
-  const links = Array.from(document.querySelectorAll('a'));
-  
-  for (const link of links) {
-    console.log(`Checking link: ${link.textContent}`);
-    
-    const text = link.textContent.toLowerCase();
-    const sem = romanSem.toLowerCase();
-    const branch = branchName.toLowerCase();
+    const clicked = await page.evaluate((romanSem, branchName) => {
+      const links = Array.from(document.querySelectorAll('a'));
 
-    if ((romanSem === 'Ist' || romanSem === 'IInd') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
-      console.log("Clicking link for Ist/IInd semester with CBCS");
-      link.click();
-      return true;
-    } else if (text.includes(sem) && text.includes(branch) && text.includes("b.e.(cbcs)")) {
-      console.log("Clicking link for other semester with branch");
-      link.click();
-      return true;
-    }
-  }
+      for (const link of links) {
+        console.log(`Checking link: ${link.textContent}`);
 
-  console.log("No matching link found.");
-  return false;
-}, romanSemester, branch);
+        const text = link.textContent.toLowerCase();
+        const sem = romanSem.toLowerCase();
+        const branch = branchName.toLowerCase();
+
+        if ((romanSem === 'Ist' || romanSem === 'IInd') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
+          console.log("Clicking link for Ist/IInd semester with CBCS");
+          link.click();
+          return true;
+        } else if (text.includes(sem) && text.includes(branch) && text.includes("b.e.(cbcs)")) {
+          console.log("Clicking link for other semester with branch");
+          link.click();
+          return true;
+        }
+      }
+
+      console.log("No matching link found.");
+      return false;
+    }, romanSemester, branch);
 
 
     if (!clicked) {
@@ -159,15 +193,15 @@ const clicked = await page.evaluate((romanSem, branchName) => {
 
     await delay(2000);
     await page.waitForSelector('#txtRollNo');
-    
+
     for (let i = 0; i < rolls.length; i++) {
       const roll = rolls[i];
       jobStore[jobId].lastProcessedRoll = roll; // Track current roll
-      console.log(`Processing roll ${roll} (${i+1}/${rolls.length})`);
-      
+      console.log(`Processing roll ${roll} (${i + 1}/${rolls.length})`);
+
       await page.evaluate(() => document.querySelector('#txtRollNo').value = '');
       await page.type('#txtRollNo', roll);
-      
+
       const dialogPromise = new Promise(resolve => {
         page.once('dialog', async dialog => {
           console.log(`Dialog appeared: ${dialog.message()}`);
@@ -178,9 +212,9 @@ const clicked = await page.evaluate((romanSem, branchName) => {
       });
 
       console.log(`Clicking get result button for ${roll}`);
-      
+
       const beforeFiles = await fs.promises.readdir(jobDir);
-      
+
       await Promise.all([
         page.click('#btnGetResult'),
         page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {
@@ -190,16 +224,16 @@ const clicked = await page.evaluate((romanSem, branchName) => {
 
       const dialog = await dialogPromise;
       let success = false;
-      
+
       if (!dialog) {
         success = await waitForDownload(roll, jobId);
       } else {
         console.log(`Dialog detected for roll ${roll}, no result available`);
       }
-      
+
       results[roll] = success;
       jobStore[jobId].completed++;
-      
+
       if (success) {
         console.log(`Successfully processed roll ${roll}`);
         jobStore[jobId].successful.push(roll);
@@ -207,9 +241,9 @@ const clicked = await page.evaluate((romanSem, branchName) => {
         console.log(`No result found for roll ${roll}`);
         jobStore[jobId].notFound.push(roll);
       }
-      
+
       console.log(`Progress: ${jobStore[jobId].completed}/${jobStore[jobId].total} rolls processed`);
-      
+
       await delay(800);
     }
   } catch (err) {
@@ -220,13 +254,13 @@ const clicked = await page.evaluate((romanSem, branchName) => {
       await page.close();
     }
   }
-  
+
   return results;
 };
 
 app.post('/result', async (req, res) => {
   console.log('Received /result request:', req.body);
-  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType} = req.body;
+  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType } = req.body;
   const jobId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const start = parseInt(startRoll.slice(-4));
@@ -236,11 +270,11 @@ app.post('/result', async (req, res) => {
 
   console.log(`Creating job ${jobId} for rolls ${startRoll} to ${endRoll}, total: ${total}`);
   // Enhanced job store with more details
-  jobStore[jobId] = { 
-    status: 'pending', 
-    completed: 0, 
-    total, 
-    notFound: [], 
+  jobStore[jobId] = {
+    status: 'pending',
+    completed: 0,
+    total,
+    notFound: [],
     successful: [],
     startTime: Date.now(),
     lastProcessedRoll: null,
@@ -259,7 +293,7 @@ app.post('/result', async (req, res) => {
   try {
     const jobDir = await ensureJobDir(jobId);
     console.log(`Using job directory: ${jobDir}`);
-    
+
     const browser = await createBrowser();
     const websiteURL = 'https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResult.aspx';
     const romanSemester = toRomanNumeral(parseInt(semester));
@@ -272,7 +306,7 @@ app.post('/result', async (req, res) => {
     for (let i = start; i <= end; i++) {
       rolls.push(`${prefix}${i.toString().padStart(4, '0')}`);
     }
-    
+
     jobStore[jobId].currentStep = 'processing_rolls';
     // Process all rolls with a single page
     await processRolls(browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType);
@@ -288,9 +322,9 @@ app.post('/result', async (req, res) => {
       console.log(`Starting PDF merge from ${jobDir} to ${mergedPath}`);
       await mergePDFs(jobDir, mergedPath);
       console.log(`PDFs successfully merged to ${mergedPath}`);
-      
+
       await deleteJobFolder(jobId);
-      
+
       jobStore[jobId].status = 'done';
       jobStore[jobId].currentStep = 'complete';
       jobStore[jobId].endTime = Date.now();
@@ -302,7 +336,7 @@ app.post('/result', async (req, res) => {
       jobStore[jobId].error = err.message;
       jobStore[jobId].currentStep = 'error';
       jobStore[jobId].endTime = Date.now();
-      
+
       // Still try to clean up in case of error
       await deleteJobFolder(jobId);
     }
@@ -312,7 +346,7 @@ app.post('/result', async (req, res) => {
     jobStore[jobId].error = err.message;
     jobStore[jobId].currentStep = 'error';
     jobStore[jobId].endTime = Date.now();
-    
+
     // Clean up in case of error
     await deleteJobFolder(jobId);
   }
@@ -321,28 +355,28 @@ app.post('/result', async (req, res) => {
 app.post('/cancel/:jobId', async (req, res) => {
   const jobId = req.params.jobId;
   console.log(`Received cancellation request for job: ${jobId}`);
-  
+
   const job = jobStore[jobId];
   if (!job) {
     console.log(`Job ${jobId} not found for cancellation`);
     return res.status(404).json({ error: 'Job not found' });
   }
-  
+
   if (job.status !== 'pending') {
     console.log(`Cannot cancel job ${jobId} with status ${job.status}`);
     return res.status(400).json({ error: 'Job cannot be cancelled in its current state' });
   }
-  
+
   try {
     job.status = 'canceled';
     job.currentStep = 'canceled';
     job.endTime = Date.now();
-    
+
     console.log(`Job ${jobId} marked as canceled`);
-    
+
     await deleteJobFolder(jobId);
     console.log(`Resources cleaned up for canceled job ${jobId}`);
-    
+
     res.json({ success: true, message: 'Job canceled successfully' });
   } catch (err) {
     console.error(`Error canceling job ${jobId}:`, err);
@@ -350,7 +384,7 @@ app.post('/cancel/:jobId', async (req, res) => {
   }
 });
 
-app.get('/status/:jobId', (req, res) => { 
+app.get('/status/:jobId', (req, res) => {
   const jobId = req.params.jobId;
   console.log(`Status check for job: ${jobId}`);
   const job = jobStore[jobId];
@@ -358,26 +392,26 @@ app.get('/status/:jobId', (req, res) => {
     console.log(`Job ${jobId} not found`);
     return res.status(404).json({ error: 'Job not found' });
   }
-  
+
   const now = Date.now();
   const elapsedMs = now - job.startTime;
   const elapsedSeconds = Math.floor(elapsedMs / 1000);
   const elapsedMinutes = elapsedSeconds / 60;
-  
+
   let speed = 0;
   if (job.completed > 0 && elapsedSeconds > 0) {
     speed = (job.completed / elapsedSeconds) * 60;
   }
-  
+
   let estimatedTimeRemaining = null;
   if (speed > 0 && job.total > job.completed) {
     const remainingRolls = job.total - job.completed;
     estimatedTimeRemaining = remainingRolls / speed;
   }
-  
-  const progressPercent = job.total > 0 ? 
+
+  const progressPercent = job.total > 0 ?
     `${Math.round((job.completed / job.total) * 100)}%` : '0%';
-  
+
   const enhancedResponse = {
     ...job,
     progress: `${job.completed}/${job.total} (${progressPercent})`,
@@ -390,7 +424,7 @@ app.get('/status/:jobId', (req, res) => {
     processingSpeed: {
       rollsPerMinute: speed.toFixed(2)
     },
-    estimatedTimeRemaining: estimatedTimeRemaining ? 
+    estimatedTimeRemaining: estimatedTimeRemaining ?
       {
         minutes: estimatedTimeRemaining.toFixed(2),
         formatted: formatTime(Math.round(estimatedTimeRemaining * 60))
@@ -400,7 +434,7 @@ app.get('/status/:jobId', (req, res) => {
     recentSuccessful: job.successful.slice(-10).reverse(),
     recentNotFound: job.notFound.slice(-10).reverse()
   };
-  
+
   console.log(`Returning enhanced status for job ${jobId}: ${job.status}, progress: ${job.completed}/${job.total}`);
   res.json(enhancedResponse);
 });
@@ -409,7 +443,7 @@ function formatTime(totalSeconds) {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  
+
   return [
     hours > 0 ? String(hours).padStart(2, '0') : null,
     String(minutes).padStart(2, '0'),

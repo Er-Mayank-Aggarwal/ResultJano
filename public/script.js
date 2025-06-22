@@ -89,6 +89,10 @@ document
     const semester = document.getElementById("semester").value;
     const branch = document.getElementById("branch").value;
     const semesterType = parseInt(semester) % 2 === 0 ? "Even" : "Odd";
+    if(semester === "annual")
+    {
+      semesterType = "annual";
+    }
 
     if (
       !academicYear ||
