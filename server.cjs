@@ -25,9 +25,18 @@ app.use(cors());
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('ngrok-skip-browser-warning', 'true');
+  res.setHeader('localtunnel-skip-browser-warning', 'true');
+  res.setHeader('Bypass-Tunnel-Reminder', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   next();
 });
-app.use('/merged', express.static(mergedDir));
+app.use('/merged', (req, res, next) => {
+  res.setHeader('Bypass-Tunnel-Reminder', 'true');
+  res.setHeader('localtunnel-skip-browser-warning', 'true');
+  next();
+}, express.static(mergedDir));
 app.use(express.static(publicDir));
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -46,15 +55,31 @@ const ensureJobDir = async (jobId) => {
   return jobDir;
 };
 
-const waitForDownload = async (roll, downloadDir, timeoutMs = 3000) => {
+const waitForDownload = async (roll, downloadDir, existingFiles, timeoutMs = 3000) => {
   console.log(`Waiting for download of roll ${roll} in ${downloadDir}, timeout: ${timeoutMs}ms`);
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {
     if (fs.existsSync(downloadDir)) {
       const files = await fs.promises.readdir(downloadDir);
-      const pdfFiles = files.filter(f => f.endsWith('.pdf') && !f.endsWith('.crdownload'));
-      if (pdfFiles.some(f => f.includes(roll))) {
-        console.log(`Download completed for roll ${roll}`);
+      // Filter out files that already existed before this roll click, and exclude .crdownload
+      const newPdfFiles = files.filter(f => !existingFiles.has(f) && f.endsWith('.pdf') && !f.endsWith('.crdownload'));
+      if (newPdfFiles.length > 0) {
+        const targetFile = newPdfFiles[0];
+        const ext = path.extname(targetFile);
+        const newFileName = `${roll}${ext}`;
+        if (targetFile !== newFileName) {
+          try {
+            await fs.promises.rename(
+              path.join(downloadDir, targetFile),
+              path.join(downloadDir, newFileName)
+            );
+            console.log(`Renamed newly downloaded file ${targetFile} to ${newFileName} for roll ${roll}`);
+          } catch (renameErr) {
+            console.error(`Error renaming file for roll ${roll}:`, renameErr);
+          }
+        } else {
+          console.log(`Download completed for roll ${roll}: ${newFileName}`);
+        }
         return true;
       }
     }
@@ -77,6 +102,25 @@ const cleanFolder = async folder => {
   console.log(`Folder ${folder} cleaned successfully`);
 };
 
+const cleanOldMergedFiles = async () => {
+  try {
+    if (!fs.existsSync(mergedDir)) return;
+    const files = await fs.promises.readdir(mergedDir);
+    const now = Date.now();
+    const oneHourMs = 60 * 60 * 1000;
+    for (const file of files) {
+      const filePath = path.join(mergedDir, file);
+      const stats = await fs.promises.stat(filePath);
+      if (now - stats.mtimeMs > oneHourMs) {
+        console.log(`Cleaning up old merged file: ${file}`);
+        await fs.promises.unlink(filePath).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error("Error cleaning old merged files:", err.message);
+  }
+};
+
 const deleteJobFolder = async (jobId) => {
   const jobDir = getJobDownloadDir(jobId);
   if (fs.existsSync(jobDir)) {
@@ -87,7 +131,7 @@ const deleteJobFolder = async (jobId) => {
 };
 
 const toRomanNumeral = num => {
-  const romanNumerals = { 1: 'Ist', 2: 'IInd', 3: 'IIIrd', 4: 'IVth', 5: 'Vth', 6: 'VIth', 7: 'VIIth', 8: 'VIIIth'};
+  const romanNumerals = { 1: 'Ist', 2: 'IInd', 3: 'IIIrd', 4: 'IVth', 5: 'Vth', 6: 'VIth', 7: 'VIIth', 8: 'VIIIth' };
   return romanNumerals[num] || num.toString();
 };
 
@@ -108,6 +152,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
     page = await context.newPage();
     console.log(`New isolated browser context & page created for tab`);
     const client = await page.target().createCDPSession();
+    await client.send('Page.enable').catch(() => { });
     await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: tabDownloadDir });
 
     console.log(`Navigating to ${websiteURL}`);
@@ -118,7 +163,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       // Try ID-based selector first
       const idSelector = `#link${semesterType}Sem${academicYear}`;
       const elementExists = await page.$(idSelector);
-      
+
       if (elementExists) {
         console.log(`Clicking on ${idSelector}`);
         await page.click(idSelector);
@@ -128,11 +173,11 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
         const startYear = parseInt(academicYear) - 1;
         const endYearShort = (parseInt(academicYear) % 100).toString().padStart(2, '0');
         const academicYearString = `${startYear}-${endYearShort}`;
-        
+
         const clickedNormal = await page.evaluate((semType, yearStr) => {
           const links = Array.from(document.querySelectorAll('a'));
           const semLower = semType.toLowerCase();
-          
+
           for (const link of links) {
             const text = link.textContent.toLowerCase();
             if (text.includes(semLower) && text.includes('semester') && text.includes(yearStr)) {
@@ -143,19 +188,19 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
           }
           return false;
         }, semesterType, academicYearString);
-        
+
         if (!clickedNormal) {
           console.log(`❌ No matching link found for: ${semesterType} Semester ${academicYearString}`);
           return {};
         }
         console.log(`✅ Normal exam link clicked via text matching`);
       }
-      
+
       // Wait for ASP.NET AJAX PostBack to dynamically render branch links
       await page.waitForFunction(() => {
         const links = Array.from(document.querySelectorAll('a'));
         return links.some(l => l.textContent.toLowerCase().includes('b.e.(cbcs)'));
-      }, { timeout: 10000 }).catch(() => {});
+      }, { timeout: 10000 }).catch(() => { });
     }
 
     else if (examType === "reval") {
@@ -175,7 +220,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
         for (const link of links) {
           console.log(`Checking link: ${link.textContent}`);
           const text = link.textContent.toLowerCase();
- 
+
           if (text.includes(etype) &&
             text.includes(sem) &&
             text.includes(academicYearString)) {
@@ -196,7 +241,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       await page.waitForFunction(() => {
         const links = Array.from(document.querySelectorAll('a'));
         return links.some(l => l.textContent.toLowerCase().includes('b.e.(cbcs)'));
-      }, { timeout: 10000 }).catch(() => {});
+      }, { timeout: 10000 }).catch(() => { });
     }
 
     else if (examType === "Makeup") {
@@ -209,7 +254,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
     const clicked = await page.evaluate((romanSem, branchName) => {
       const links = Array.from(document.querySelectorAll('a'));
-      
+
       const normalize = (str) => str.toLowerCase().replace(/&/g, 'and');
 
       for (const link of links) {
@@ -271,6 +316,10 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
       page.once('dialog', onDialog);
 
+      // Snapshot files in tab directory before clicking get result
+      const existingFiles = fs.existsSync(tabDownloadDir) ?
+        new Set(await fs.promises.readdir(tabDownloadDir)) : new Set();
+
       console.log(`Clicking get result button for ${roll}`);
       await page.click('#btnGetResult');
 
@@ -280,7 +329,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
       let success = false;
       if (!dialogDetected) {
-        success = await waitForDownload(roll, tabDownloadDir, downloadTimeout);
+        success = await waitForDownload(roll, tabDownloadDir, existingFiles, downloadTimeout);
       } else {
         console.log(`Dialog detected for roll ${roll}, no result available`);
       }
@@ -305,10 +354,10 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
   } finally {
     if (page) {
       console.log(`Closing page after batch processing`);
-      await page.close().catch(() => {});
+      await page.close().catch(() => { });
     }
     if (context) {
-      await context.close().catch(() => {});
+      await context.close().catch(() => { });
     }
   }
 
@@ -364,7 +413,7 @@ app.post('/result', async (req, res) => {
     const romanSemester = semester === "annual" ? "annual" : toRomanNumeral(parseInt(semester)).toLowerCase();
 
     console.log(`Using roman semester: ${romanSemester}`);
-    await cleanFolder(mergedDir);
+    await cleanOldMergedFiles();
 
     // Generate all roll numbers first
     const rolls = [];
@@ -401,6 +450,9 @@ app.post('/result', async (req, res) => {
       )
     );
 
+    console.log('All parallel tabs finished. Waiting 5 seconds to complete any remaining background downloads before merging...');
+    await delay(5000);
+
     // Consolidate downloaded files from tab dirs into main job dir
     for (const tabDir of tabDirs) {
       if (fs.existsSync(tabDir)) {
@@ -417,7 +469,21 @@ app.post('/result', async (req, res) => {
     console.log('Closing browser');
     await browser.close();
 
-    const mergedFile = `Merged_result.pdf`;
+    // Verify PDF files count in job directory and synchronize success count
+    const jobFiles = fs.existsSync(jobDir) ? await fs.promises.readdir(jobDir) : [];
+    const actualPdfFiles = jobFiles.filter(f => f.endsWith('.pdf'));
+    console.log(`PDFs Count Check: ${actualPdfFiles.length} actual PDF files found in job directory (Recorded successful: ${jobStore[jobId].successful.length})`);
+
+    const successfulSet = new Set(jobStore[jobId].successful);
+    for (const pdfFile of actualPdfFiles) {
+      const rollName = path.basename(pdfFile, '.pdf');
+      if (!successfulSet.has(rollName)) {
+        successfulSet.add(rollName);
+      }
+    }
+    jobStore[jobId].successful = Array.from(successfulSet);
+
+    const mergedFile = `Merged_result_${jobId}.pdf`;
     const mergedPath = path.join(mergedDir, mergedFile);
 
     try {
