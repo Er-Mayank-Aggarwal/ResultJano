@@ -7,6 +7,7 @@ const { mergePDFs } = require('./utils/mergePDFs.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 5002;
+const CONCURRENCY = 3; // Number of parallel browser contexts/tabs
 
 console.log('Initializing server...');
 const downloadsBaseDir = path.join(__dirname, 'downloads');
@@ -41,17 +42,19 @@ const ensureJobDir = async (jobId) => {
   return jobDir;
 };
 
-const waitForDownload = async (roll, jobId, timeoutMs = 10000) => {
-  const jobDir = getJobDownloadDir(jobId);
-  console.log(`Waiting for download of roll ${roll} in ${jobDir}, timeout: ${timeoutMs}ms`);
+const waitForDownload = async (roll, downloadDir, timeoutMs = 3000) => {
+  console.log(`Waiting for download of roll ${roll} in ${downloadDir}, timeout: ${timeoutMs}ms`);
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {
-    const files = await fs.promises.readdir(jobDir);
-    if (files.length > 0) {
-      console.log(`Download completed for roll ${roll}`);
-      return true;
+    if (fs.existsSync(downloadDir)) {
+      const files = await fs.promises.readdir(downloadDir);
+      const pdfFiles = files.filter(f => f.endsWith('.pdf') && !f.endsWith('.crdownload'));
+      if (pdfFiles.some(f => f.includes(roll))) {
+        console.log(`Download completed for roll ${roll}`);
+        return true;
+      }
     }
-    await delay(500);
+    await delay(150);
   }
   console.log(`Download timeout for roll ${roll}`);
   return false;
@@ -85,30 +88,70 @@ const toRomanNumeral = num => {
 };
 
 const createBrowser = async () => {
-  console.log('Launching Puppeteer browser');
-  return await puppeteer.launch({ headless: false, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  console.log('Launching Puppeteer browser (headless)');
+  return await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 };
 
-const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType) => {
-  console.log(`Processing ${rolls.length} roll numbers`);
+const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType, tabDownloadDir, downloadTimeout = 5000) => {
+  console.log(`Processing ${rolls.length} roll numbers in tab dir: ${tabDownloadDir} (timeout: ${downloadTimeout}ms)`);
   const results = {};
-  const jobDir = getJobDownloadDir(jobId);
+  let context;
   let page;
 
   try {
-    page = await browser.newPage();
-    console.log(`New page created for batch processing`);
+    // Create an isolated browser context per tab so download directories do not override each other!
+    context = await browser.createBrowserContext();
+    page = await context.newPage();
+    console.log(`New isolated browser context & page created for tab`);
     const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: jobDir });
+    await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: tabDownloadDir });
 
     console.log(`Navigating to ${websiteURL}`);
     await page.goto(websiteURL, { waitUntil: 'networkidle2' });
     console.log(examType);
     if (examType == "normal") {
       console.log('Normal exam type selected');
-      console.log(`Clicking on ${semesterType}Sem${academicYear}`);
-      await page.click(`#link${semesterType}Sem${academicYear}`);
-      await delay(2000);
+      // Try ID-based selector first
+      const idSelector = `#link${semesterType}Sem${academicYear}`;
+      const elementExists = await page.$(idSelector);
+      
+      if (elementExists) {
+        console.log(`Clicking on ${idSelector}`);
+        await page.click(idSelector);
+      } else {
+        // Fallback: find the link by text content matching semester type and academic year
+        console.log(`Selector ${idSelector} not found, falling back to text-based matching`);
+        const startYear = parseInt(academicYear) - 1;
+        const endYearShort = (parseInt(academicYear) % 100).toString().padStart(2, '0');
+        const academicYearString = `${startYear}-${endYearShort}`;
+        
+        const clickedNormal = await page.evaluate((semType, yearStr) => {
+          const links = Array.from(document.querySelectorAll('a'));
+          const semLower = semType.toLowerCase();
+          
+          for (const link of links) {
+            const text = link.textContent.toLowerCase();
+            if (text.includes(semLower) && text.includes('semester') && text.includes(yearStr)) {
+              console.log("✅ Match found:", link.textContent);
+              link.click();
+              return true;
+            }
+          }
+          return false;
+        }, semesterType, academicYearString);
+        
+        if (!clickedNormal) {
+          console.log(`❌ No matching link found for: ${semesterType} Semester ${academicYearString}`);
+          return {};
+        }
+        console.log(`✅ Normal exam link clicked via text matching`);
+      }
+      
+      // Wait for ASP.NET AJAX PostBack to dynamically render branch links
+      await page.waitForFunction(() => {
+        const links = Array.from(document.querySelectorAll('a'));
+        return links.some(l => l.textContent.toLowerCase().includes('b.e.(cbcs)'));
+      }, { timeout: 10000 }).catch(() => {});
     }
 
     else if (examType === "reval") {
@@ -132,7 +175,6 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
           if (text.includes(etype) &&
             text.includes(sem) &&
             text.includes(academicYearString)) {
-            // Do your stuff here
             console.log("✅ Match found:", link.href);
             link.click();
             return true;
@@ -147,7 +189,10 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       }
 
       console.log(`✅ Revaluation link clicked`);
-      await delay(2000);
+      await page.waitForFunction(() => {
+        const links = Array.from(document.querySelectorAll('a'));
+        return links.some(l => l.textContent.toLowerCase().includes('b.e.(cbcs)'));
+      }, { timeout: 10000 }).catch(() => {});
     }
 
     else if (examType === "Makeup") {
@@ -158,22 +203,31 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
     }
     console.log(`Attempting to find and click ${romanSemester} semester for ${branch}`);
 
-
     const clicked = await page.evaluate((romanSem, branchName) => {
       const links = Array.from(document.querySelectorAll('a'));
+      
+      const normalize = (str) => str.toLowerCase().replace(/&/g, 'and');
 
       for (const link of links) {
-        console.log(`Checking link: ${link.textContent}`);
-
-        const text = link.textContent.toLowerCase();
+        const text = normalize(link.textContent);
         const sem = romanSem.toLowerCase();
-        const branch = branchName.toLowerCase();
+        const branch = normalize(branchName);
 
-        if ((romanSem === 'Ist' || romanSem === 'IInd') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
+        let branchMatched = false;
+        if (branch === 'ee') {
+          // EE should match 'electrical engineering' or '(ee)' but avoid matching just 'electronics and electrical' alone if EE is requested
+          branchMatched = text.includes('electrical engineering') || text.includes('(ee)');
+        } else if (branch === 'electrical and electronics') {
+          branchMatched = text.includes('electrical and electronics') || text.includes('electronics and electrical');
+        } else {
+          branchMatched = text.includes(branch);
+        }
+
+        if ((sem === 'ist' || sem === 'iind') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
           console.log("Clicking link for Ist/IInd semester with CBCS");
           link.click();
           return true;
-        } else if (text.includes(sem) && text.includes(branch) && text.includes("b.e.(cbcs)")) {
+        } else if (text.includes(sem) && branchMatched && text.includes("b.e.(cbcs)")) {
           console.log("Clicking link for other semester with branch");
           link.click();
           return true;
@@ -184,13 +238,12 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       return false;
     }, romanSemester, branch);
 
-
     if (!clicked) {
       console.log(`Failed to find link for ${romanSemester} semester and ${branch}`);
       return {};
     }
 
-    await delay(2000);
+    await delay(500);
     await page.waitForSelector('#txtRollNo');
 
     for (let i = 0; i < rolls.length; i++) {
@@ -201,46 +254,29 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       await page.evaluate(() => document.querySelector('#txtRollNo').value = '');
       await page.type('#txtRollNo', roll);
 
-      const dialogPromise = new Promise(resolve => {
-        let resolved = false;
+      let dialogDetected = false;
+      const onDialog = async dialog => {
+        try {
+          console.log(`Dialog appeared: ${dialog.message()}`);
+          dialogDetected = true;
+          await dialog.accept();
+        } catch (err) {
+          // Ignore
+        }
+      };
 
-        page.once('dialog', async dialog => {
-          try {
-            console.log(`Dialog appeared: ${dialog.message()}`);
-            await dialog.accept();
-            resolved = true;
-            resolve(true);
-          } catch (err) {
-            console.warn('Dialog already handled or error:', err.message);
-            resolved = true;
-            resolve(false); // Safe fallback
-          }
-        });
-
-        setTimeout(() => {
-          if (!resolved) {
-            resolve(false);
-          }
-        }, 8000);
-      });
-
+      page.once('dialog', onDialog);
 
       console.log(`Clicking get result button for ${roll}`);
+      await page.click('#btnGetResult');
 
-      const beforeFiles = await fs.promises.readdir(jobDir);
+      // Small delay for click event dispatching
+      await delay(200);
+      page.off('dialog', onDialog);
 
-      await Promise.all([
-        page.click('#btnGetResult'),
-        page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {
-          console.log('Navigation timeout - this can be normal if download started');
-        })
-      ]);
-
-      const dialog = await dialogPromise;
       let success = false;
-
-      if (!dialog) {
-        success = await waitForDownload(roll, jobId);
+      if (!dialogDetected) {
+        success = await waitForDownload(roll, tabDownloadDir, downloadTimeout);
       } else {
         console.log(`Dialog detected for roll ${roll}, no result available`);
       }
@@ -258,14 +294,17 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
       console.log(`Progress: ${jobStore[jobId].completed}/${jobStore[jobId].total} rolls processed`);
 
-      await delay(800);
+      await delay(100);
     }
   } catch (err) {
     console.error(`Error in batch processing:`, err);
   } finally {
     if (page) {
       console.log(`Closing page after batch processing`);
-      await page.close();
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
     }
   }
 
@@ -274,8 +313,17 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
 app.post('/result', async (req, res) => {
   console.log('Received /result request:', req.body);
-  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType } = req.body;
+  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType, speed } = req.body;
   const jobId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  let downloadTimeout = 5000; // Fast = 5s (default)
+  if (speed === 'very_fast') {
+    downloadTimeout = 3000; // Very Fast = 3s
+  } else if (speed === 'medium') {
+    downloadTimeout = 10000; // Medium = 10s
+  } else if (speed === 'slow') {
+    downloadTimeout = 20000; // Slow / Low = 20s
+  }
 
   const start = parseInt(startRoll.slice(-4));
   const end = parseInt(endRoll.slice(-4));
@@ -283,7 +331,6 @@ app.post('/result', async (req, res) => {
   const total = end - start + 1;
 
   console.log(`Creating job ${jobId} for rolls ${startRoll} to ${endRoll}, total: ${total}`);
-  // Enhanced job store with more details
   jobStore[jobId] = {
     status: 'pending',
     completed: 0,
@@ -322,8 +369,46 @@ app.post('/result', async (req, res) => {
     }
 
     jobStore[jobId].currentStep = 'processing_rolls';
-    // Process all rolls with a single page
-    await processRolls(browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType);
+
+    // Split rolls into chunks for parallel processing
+    const numTabs = Math.min(CONCURRENCY, rolls.length);
+    const chunks = [];
+    for (let t = 0; t < numTabs; t++) {
+      chunks.push([]);
+    }
+    rolls.forEach((roll, i) => chunks[i % numTabs].push(roll));
+
+    console.log(`Splitting ${rolls.length} rolls across ${numTabs} parallel tabs`);
+
+    // Create separate download directories per tab
+    const tabDirs = [];
+    for (let t = 0; t < numTabs; t++) {
+      const tabDir = path.join(jobDir, `tab_${t}`);
+      if (!fs.existsSync(tabDir)) {
+        fs.mkdirSync(tabDir, { recursive: true });
+      }
+      tabDirs.push(tabDir);
+    }
+
+    // Process all chunks in parallel using isolated browser contexts
+    await Promise.all(
+      chunks.map((chunk, idx) =>
+        processRolls(browser, chunk, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType, tabDirs[idx], downloadTimeout)
+      )
+    );
+
+    // Consolidate downloaded files from tab dirs into main job dir
+    for (const tabDir of tabDirs) {
+      if (fs.existsSync(tabDir)) {
+        const files = await fs.promises.readdir(tabDir);
+        for (const file of files) {
+          const src = path.join(tabDir, file);
+          const dest = path.join(jobDir, file);
+          await fs.promises.rename(src, dest);
+        }
+        await fs.promises.rm(tabDir, { recursive: true, force: true });
+      }
+    }
 
     console.log('Closing browser');
     await browser.close();
@@ -351,7 +436,6 @@ app.post('/result', async (req, res) => {
       jobStore[jobId].currentStep = 'error';
       jobStore[jobId].endTime = Date.now();
 
-      // Still try to clean up in case of error
       await deleteJobFolder(jobId);
     }
   } catch (err) {
@@ -361,7 +445,6 @@ app.post('/result', async (req, res) => {
     jobStore[jobId].currentStep = 'error';
     jobStore[jobId].endTime = Date.now();
 
-    // Clean up in case of error
     await deleteJobFolder(jobId);
   }
 });

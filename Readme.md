@@ -91,7 +91,7 @@ PORT=8080 node server.cjs
 
 - The maximum roll number range is limited to 200 to prevent server overload
 - Roll numbers must be from the same branch and semester
-- Start and end roll numbers must have the same prefix (first 6 characters)
+- Start and end roll numbers must have the same prefix (matching all characters prior to the last 4 numeric digits)
 - **Important**: This tool only works for scraping results from MBM University's result portal (mbmiums.in)
 
 ## Authors

@@ -88,6 +88,7 @@ document
     const examType = document.getElementById("exam-type").value;
     const semester = document.getElementById("semester").value;
     const branch = document.getElementById("branch").value;
+    const speed = document.getElementById("speed") ? document.getElementById("speed").value : "fast";
 
     let semesterType = "";
     if(semester === "annual")
@@ -111,8 +112,13 @@ document
       return;
     }
 
-    if (startRoll.length !== 10 || endRoll.length !== 10) {
-      alert("Roll numbers must be exactly 10 characters long.");
+    if (startRoll.length < 4 || endRoll.length < 4) {
+      alert("Roll numbers must be at least 4 characters long.");
+      return;
+    }
+
+    if (startRoll.length !== endRoll.length) {
+      alert("Start and end roll numbers must have the same length.");
       return;
     }
 
@@ -121,10 +127,10 @@ document
       return;
     }
 
-    const prefixStart = startRoll.slice(0, 6);
-    const prefixEnd = endRoll.slice(0, 6);
+    const prefixStart = startRoll.slice(0, -4);
+    const prefixEnd = endRoll.slice(0, -4);
     if (prefixStart !== prefixEnd) {
-      alert("First 6 characters of start and end roll numbers must match.");
+      alert("The prefix of start and end roll numbers must match.");
       return;
     }
 
@@ -226,7 +232,8 @@ document
           semester,
           semesterType,
           branch,
-          examType
+          examType,
+          speed
         }),
       });
 
