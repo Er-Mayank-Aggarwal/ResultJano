@@ -12,6 +12,88 @@ const log = (msg) => {
   logSection.scrollTop = logSection.scrollHeight;
 };
 
+const resultLinkSelect = document.getElementById("result-link");
+const firstYearLinkContainer = document.getElementById("first-year-link-container");
+const firstYearLinkSelect = document.getElementById("first-year-link");
+const academicYearSelect = document.getElementById("academic-year");
+const examTypeSelect = document.getElementById("exam-type");
+const semesterSelect = document.getElementById("semester");
+
+const updateFirstYearLinkVisibility = () => {
+  const isFirstYear = semesterSelect.value === "1";
+  firstYearLinkContainer.classList.toggle("hidden", !isFirstYear);
+  firstYearLinkSelect.required = isFirstYear;
+  if (!isFirstYear) {
+    firstYearLinkSelect.value = "";
+  }
+};
+
+const loadFirstYearLinks = async () => {
+  updateFirstYearLinkVisibility();
+  if (semesterSelect.value !== "1" || !resultLinkSelect.value) return;
+
+  firstYearLinkSelect.disabled = true;
+  firstYearLinkSelect.innerHTML = '<option value="">Loading first-year links...</option>';
+  try {
+    const params = new URLSearchParams({ resultLinkId: resultLinkSelect.value });
+    const response = await fetch(`/first-year-links?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load first-year links");
+
+    firstYearLinkSelect.innerHTML = '<option value="">Select the exact first-year result link</option>';
+    data.links.forEach((link) => {
+      const option = document.createElement("option");
+      option.value = link.id;
+      option.textContent = link.label;
+      firstYearLinkSelect.appendChild(option);
+    });
+    firstYearLinkSelect.disabled = data.links.length === 0;
+    if (data.links.length === 0) {
+      firstYearLinkSelect.innerHTML = '<option value="">No first-year links found</option>';
+    }
+  } catch (error) {
+    console.error("First-year link loading error:", error);
+    firstYearLinkSelect.innerHTML = '<option value="">Could not load first-year links</option>';
+  }
+};
+
+const loadResultLinks = async () => {
+  resultLinkSelect.disabled = true;
+  resultLinkSelect.innerHTML = '<option value="">Loading result links...</option>';
+
+  try {
+    const params = new URLSearchParams({
+      academicYear: academicYearSelect.value,
+      examType: examTypeSelect.value
+    });
+    const response = await fetch(`/result-links?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load result links");
+
+    resultLinkSelect.innerHTML = '<option value="">Select an exact result link</option>';
+    data.links.forEach((link) => {
+      const option = document.createElement("option");
+      option.value = link.id;
+      option.textContent = link.label;
+      resultLinkSelect.appendChild(option);
+    });
+    resultLinkSelect.disabled = data.links.length === 0;
+    if (data.links.length === 0) {
+      resultLinkSelect.innerHTML = '<option value="">No matching result links found</option>';
+    }
+    await loadFirstYearLinks();
+  } catch (error) {
+    console.error("Result link loading error:", error);
+    resultLinkSelect.innerHTML = '<option value="">Could not load result links</option>';
+  }
+};
+
+academicYearSelect.addEventListener("change", loadResultLinks);
+examTypeSelect.addEventListener("change", loadResultLinks);
+resultLinkSelect.addEventListener("change", loadFirstYearLinks);
+semesterSelect.addEventListener("change", loadFirstYearLinks);
+loadResultLinks();
+
 document
   .getElementById("roll-number-form")
   .addEventListener("submit", async function (e) {
@@ -90,8 +172,11 @@ document
     const endRoll = document.getElementById("end-roll").value.trim();
     const academicYear = document.getElementById("academic-year").value;
     const examType = document.getElementById("exam-type").value;
+    const resultLinkId = resultLinkSelect.value;
+    const firstYearLinkId = firstYearLinkSelect.value;
     const semester = document.getElementById("semester").value;
-    const branch = document.getElementById("branch").value;
+    const isBranchlessSemester = semester === "1" || semester === "2";
+    const branch = isBranchlessSemester ? "" : document.getElementById("branch").value;
     const speed = document.getElementById("speed") ? document.getElementById("speed").value : "fast";
 
     let semesterType = "";
@@ -107,8 +192,10 @@ document
     if (
       !academicYear ||
       !examType ||
+      !resultLinkId ||
+      (semester === "1" && !firstYearLinkId) ||
       !semester ||
-      !branch ||
+      (!isBranchlessSemester && !branch) ||
       !startRoll ||
       !endRoll
     ) {
@@ -147,8 +234,9 @@ document
       return;
     }
 
-    if (total > 200) {
-      alert("Roll number range cannot exceed 200.");
+    const maxRollRange = isBranchlessSemester ? 800 : 200;
+    if (total > maxRollRange) {
+      alert(`Roll number range cannot exceed ${maxRollRange} for this semester.`);
       return;
     }
 
@@ -243,7 +331,9 @@ document
           academicYear,
           semester,
           semesterType,
-          branch,
+          resultLinkId,
+          firstYearLinkId,
+          branch: isBranchlessSemester ? "" : branch,
           examType,
           speed
         }),

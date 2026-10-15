@@ -140,7 +140,120 @@ const createBrowser = async () => {
   return await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 };
 
-const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType, tabDownloadDir, downloadTimeout = 5000) => {
+app.get('/result-links', async (req, res) => {
+  const { academicYear, examType } = req.query;
+  if (!academicYear || !examType) {
+    return res.status(400).json({ error: 'academicYear and examType are required' });
+  }
+
+  let browser;
+  try {
+    browser = await createBrowser();
+    const page = await browser.newPage();
+    await page.goto('https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResult.aspx', {
+      waitUntil: 'networkidle2'
+    });
+
+    const links = await page.evaluate((year, type) => {
+      const startYear = parseInt(year, 10) - 1;
+      const endYearShort = (parseInt(year, 10) % 100).toString().padStart(2, '0');
+      const yearText = `${startYear}-${endYearShort}`;
+      const wantedType = type.toLowerCase();
+
+      return Array.from(document.querySelectorAll('a[id^="LinkButton"], a[id^="link"]'))
+        .map(link => ({
+          id: link.id,
+          label: (link.textContent || '').replace(/\s+/g, ' ').trim(),
+          section: (link.closest('.block1') || link.closest('table') || link.parentElement)?.textContent
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase() || ''
+        }))
+        .filter(link => {
+          const label = link.label.toLowerCase();
+          const section = link.section;
+          if (!label.includes(yearText)) return false;
+          if (wantedType === 'normal') {
+            return !section.includes('re-evaluation') &&
+              !section.includes('revaluation') &&
+              !label.includes('reval') &&
+              !label.includes('make up') &&
+              !label.includes('makeup');
+          }
+          if (wantedType === 'reval') {
+            return section.includes('re-evaluation') ||
+              section.includes('revaluation') ||
+              label.includes('reval');
+          }
+          if (wantedType === 'makeup') {
+            return section.includes('make up') ||
+              section.includes('makeup') ||
+              label.includes('make up') ||
+              label.includes('makeup');
+          }
+          return false;
+        });
+    }, academicYear, examType);
+
+    res.json({ links });
+    await page.close();
+  } catch (err) {
+    console.error('Failed to load result links:', err);
+    res.status(502).json({ error: 'Unable to load result links from the MBM portal' });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+});
+
+app.get('/first-year-links', async (req, res) => {
+  const { resultLinkId } = req.query;
+  if (!resultLinkId || !/^[A-Za-z][A-Za-z0-9_]*$/.test(resultLinkId)) {
+    return res.status(400).json({ error: 'A valid result link must be selected' });
+  }
+
+  let browser;
+  try {
+    browser = await createBrowser();
+    const page = await browser.newPage();
+    await page.goto('https://mbmiums.in/(S(zkvqtk0qyp2cyqpl4smvkq45))/Results/ExamResult.aspx', {
+      waitUntil: 'networkidle2'
+    });
+
+    const clicked = await page.evaluate((linkId) => {
+      const link = document.getElementById(linkId);
+      if (!link) return false;
+      link.click();
+      return true;
+    }, resultLinkId);
+    if (!clicked) throw new Error(`Result link #${resultLinkId} was not found`);
+
+    await page.waitForFunction(() => document.querySelectorAll('#dgResultUG a').length > 0, {
+      timeout: 10000
+    });
+
+    const links = await page.evaluate(() => Array.from(document.querySelectorAll('#dgResultUG a'))
+      .map(link => ({
+        id: link.id,
+        label: (link.textContent || '').replace(/\s+/g, ' ').trim()
+      }))
+      .filter(link => {
+        const label = link.label.toLowerCase();
+        return label.includes('ist sem') ||
+          label.includes('1st sem') ||
+          label.includes('first sem');
+      }));
+
+    res.json({ links });
+    await page.close();
+  } catch (err) {
+    console.error('Failed to load first-year result links:', err);
+    res.status(502).json({ error: 'Unable to load first-year result links from the MBM portal' });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+});
+
+const processRolls = async (browser, rolls, websiteURL, semesterType, academicYear, romanSemester, branch, resultLinkId, firstYearLinkId, jobId, examType, tabDownloadDir, downloadTimeout = 5000) => {
   console.log(`Processing ${rolls.length} roll numbers in tab dir: ${tabDownloadDir} (timeout: ${downloadTimeout}ms)`);
   const results = {};
   let context;
@@ -230,12 +343,11 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
           }
         }
         return false;
-      }, examType, academicYear, semesterType);
-
-      if (!clickedd) {
-        console.log(`❌ No matching revaluation link found for: ${examType} - ${academicYear} - ${semesterType}`);
-        return {};
       }
+      
+      const normalize = (str) => (str || '').toLowerCase().replace(/&/g, 'and');
+      const branch = normalize(branchName);
+      const isBranchlessSemester = !branch || romanSem.toLowerCase() === 'ist' || romanSem.toLowerCase() === 'iind';
 
       console.log(`✅ Revaluation link clicked`);
       await page.waitForFunction(() => {
@@ -249,8 +361,16 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
     }
     else if (examType === "Supplementary") {
 
-    }
-    console.log(`Attempting to find and click ${romanSemester} semester for ${branch}`);
+      const semesterMatch = (text, sem) => {
+        const semLower = sem.toLowerCase();
+        return text.includes(semLower)
+          || text.includes(semLower.replace('iind', 'ii'))
+          || text.includes(semLower.replace('ist', 'i'))
+          || text.includes('1st') && semLower === 'ist'
+          || text.includes('2nd') && semLower === 'iind'
+          || text.includes('first') && semLower === 'ist'
+          || text.includes('second') && semLower === 'iind';
+      };
 
     const clicked = await page.evaluate((romanSem, branchName) => {
       const links = Array.from(document.querySelectorAll('a'));
@@ -260,24 +380,9 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
       for (const link of links) {
         const text = normalize(link.textContent);
         const sem = romanSem.toLowerCase();
-        const branch = normalize(branchName);
 
-        let branchMatched = false;
-        if (branch === 'ee') {
-          // EE should match 'electrical engineering' or '(ee)' but avoid matching just 'electronics and electrical' alone if EE is requested
-          branchMatched = text.includes('electrical engineering') || text.includes('(ee)');
-        } else if (branch === 'electrical and electronics') {
-          branchMatched = text.includes('electrical and electronics') || text.includes('electronics and electrical');
-        } else {
-          branchMatched = text.includes(branch);
-        }
-
-        if ((sem === 'ist' || sem === 'iind') && text.includes(sem) && text.includes("b.e.(cbcs)")) {
-          console.log("Clicking link for Ist/IInd semester with CBCS");
-          link.click();
-          return true;
-        } else if (text.includes(sem) && branchMatched && text.includes("b.e.(cbcs)")) {
-          console.log("Clicking link for other semester with branch");
+        if (semesterMatch(text, sem) && courseTextMatch(text) && (isBranchlessSemester || branchMatched(text))) {
+          console.log(`Clicking link for ${romanSem} semester${isBranchlessSemester ? ' without branch' : ' with branch'}`);
           link.click();
           return true;
         }
@@ -285,7 +390,7 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
       console.log("No matching link found.");
       return false;
-    }, romanSemester, branch);
+    }, romanSemester, branch, firstYearLinkId);
 
     if (!clicked) {
       console.log(`Failed to find link for ${romanSemester} semester and ${branch}`);
@@ -366,7 +471,11 @@ const processRolls = async (browser, rolls, websiteURL, semesterType, academicYe
 
 app.post('/result', async (req, res) => {
   console.log('Received /result request:', req.body);
-  const { startRoll, endRoll, academicYear, semester, semesterType, branch, examType, speed } = req.body;
+  const { startRoll, endRoll, academicYear, semester, semesterType, branch, resultLinkId, firstYearLinkId, examType, speed } = req.body;
+  if (!resultLinkId || !/^[A-Za-z][A-Za-z0-9_]*$/.test(resultLinkId) ||
+      (semester === '1' && (!firstYearLinkId || !/^[A-Za-z][A-Za-z0-9_]*$/.test(firstYearLinkId)))) {
+    return res.status(400).json({ error: 'The exact result links must be selected' });
+  }
   const jobId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   let downloadTimeout = 5000; // Fast = 5s (default)
@@ -399,7 +508,9 @@ app.post('/result', async (req, res) => {
       academicYear,
       semester,
       semesterType,
-      branch
+      branch,
+      resultLinkId,
+      firstYearLinkId
     }
   };
   res.json({ jobId });
@@ -446,7 +557,7 @@ app.post('/result', async (req, res) => {
     // Process all chunks in parallel using isolated browser contexts
     await Promise.all(
       chunks.map((chunk, idx) =>
-        processRolls(browser, chunk, websiteURL, semesterType, academicYear, romanSemester, branch, jobId, examType, tabDirs[idx], downloadTimeout)
+        processRolls(browser, chunk, websiteURL, semesterType, academicYear, romanSemester, branch, resultLinkId, firstYearLinkId, jobId, examType, tabDirs[idx], downloadTimeout)
       )
     );
 
