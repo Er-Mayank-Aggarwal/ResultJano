@@ -116,6 +116,10 @@ document
           log("⏳ Canceling job...");
           const cancelRes = await fetch(`/cancel/${activeJobId}`, {
             method: "POST",
+            headers: {
+              "Bypass-Tunnel-Reminder": "true",
+              "localtunnel-skip-browser-warning": "true"
+            }
           });
 
           if (!cancelRes.ok) {
@@ -294,6 +298,10 @@ document
     progressSection.classList.remove("hidden");
     logSection.innerHTML = "";
     pdfViewerSection.classList.add("hidden");
+    const oldPdfDownloadContainer = document.getElementById("pdf-download-progress-container");
+    if (oldPdfDownloadContainer) {
+      oldPdfDownloadContainer.classList.add("hidden");
+    }
 
     const existingStatusPanel = document.getElementById("status-panel");
     if (existingStatusPanel) {
@@ -312,7 +320,11 @@ document
       );
       const submitRes = await fetch("/result", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Bypass-Tunnel-Reminder": "true",
+          "localtunnel-skip-browser-warning": "true"
+        },
         body: JSON.stringify({
           startRoll,
           endRoll,
@@ -361,7 +373,12 @@ document
 
       const poll = setInterval(async () => {
         try {
-          const statusRes = await fetch(`/status/${jobId}`);
+          const statusRes = await fetch(`/status/${jobId}`, {
+            headers: {
+              "Bypass-Tunnel-Reminder": "true",
+              "localtunnel-skip-browser-warning": "true"
+            }
+          });
           if (!statusRes.ok) {
             throw new Error(`Failed to get status: ${statusRes.status}`);
           }
@@ -469,14 +486,101 @@ document
               }
 
               if (successfulCount > 0 && downloadURL) {
-                document.getElementById("pdf-iframe").src = downloadURL;
-                document.getElementById("download-btn").href = downloadURL;
-                document
-                  .getElementById("pdf-viewer-section")
-                  .classList.remove("hidden");
-                log(
-                  `📄 Generated PDF with ${successfulCount} results. You can download it now.`
-                );
+                progressText.textContent = `✅ Server finished merging! Transferring PDF to browser...`;
+                log("📥 Transferring merged PDF to browser...");
+
+                let pdfDownloadContainer = document.getElementById("pdf-download-progress-container");
+                if (!pdfDownloadContainer) {
+                  pdfDownloadContainer = document.createElement("div");
+                  pdfDownloadContainer.id = "pdf-download-progress-container";
+                  pdfDownloadContainer.className = "mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg";
+                  pdfDownloadContainer.innerHTML = `
+                    <div class="flex justify-between text-sm font-semibold text-blue-900 mb-2">
+                      <span id="pdf-download-status">📥 Downloading PDF from server...</span>
+                      <span id="pdf-download-details">0.0 MB / 0.0 MB (0%)</span>
+                    </div>
+                    <div class="w-full bg-gray-200 h-3 rounded-full overflow-hidden">
+                      <div id="pdf-download-bar" class="bg-gradient-to-r from-blue-500 to-emerald-500 h-full transition-all duration-150" style="width: 0%;"></div>
+                    </div>
+                  `;
+                  progressSection.appendChild(pdfDownloadContainer);
+                } else {
+                  pdfDownloadContainer.classList.remove("hidden");
+                }
+
+                const pdfDownloadStatus = document.getElementById("pdf-download-status");
+                const pdfDownloadDetails = document.getElementById("pdf-download-details");
+                const pdfDownloadBar = document.getElementById("pdf-download-bar");
+
+                pdfDownloadBar.style.width = "0%";
+                pdfDownloadStatus.textContent = "📥 Streaming PDF to browser...";
+                pdfDownloadDetails.textContent = "0.0 MB (0%)";
+
+                (async () => {
+                  try {
+                    const cacheBustUrl = `${downloadURL}?t=${Date.now()}`;
+                    const response = await fetch(cacheBustUrl, {
+                      headers: {
+                        "Bypass-Tunnel-Reminder": "true",
+                        "localtunnel-skip-browser-warning": "true"
+                      }
+                    });
+
+                    if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+
+                    const contentLength = response.headers.get("content-length");
+                    const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+                    const reader = response.body.getReader();
+
+                    let receivedBytes = 0;
+                    const chunks = [];
+
+                    while (true) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+
+                      chunks.push(value);
+                      receivedBytes += value.length;
+
+                      const receivedMB = (receivedBytes / (1024 * 1024)).toFixed(2);
+                      if (totalBytes > 0) {
+                        const totalMB = (totalBytes / (1024 * 1024)).toFixed(2);
+                        const percent = Math.min(100, Math.round((receivedBytes / totalBytes) * 100));
+                        pdfDownloadBar.style.width = `${percent}%`;
+                        pdfDownloadDetails.textContent = `${receivedMB} MB / ${totalMB} MB (${percent}%)`;
+                        pdfDownloadStatus.textContent = `📥 Downloading PDF... (${percent}%)`;
+                      } else {
+                        pdfDownloadDetails.textContent = `${receivedMB} MB`;
+                        pdfDownloadStatus.textContent = `📥 Downloading PDF... (${receivedMB} MB loaded)`;
+                      }
+                    }
+
+                    const pdfBlob = new Blob(chunks, { type: "application/pdf" });
+                    const pdfBlobUrl = URL.createObjectURL(pdfBlob);
+
+                    const pdfIframe = document.getElementById("pdf-iframe");
+                    const downloadBtn = document.getElementById("download-btn");
+
+                    pdfIframe.src = pdfBlobUrl;
+                    downloadBtn.href = pdfBlobUrl;
+                    downloadBtn.download = "Merged_result.pdf";
+
+                    document.getElementById("pdf-viewer-section").classList.remove("hidden");
+                    pdfDownloadStatus.textContent = "✅ Download Complete!";
+                    pdfDownloadBar.style.width = "100%";
+                    log(`📄 PDF successfully received (${(receivedBytes / (1024 * 1024)).toFixed(2)} MB). Preview & Download button ready!`);
+                  } catch (err) {
+                    console.error("Streaming PDF error:", err);
+                    log(`⚠️ Streaming failed: ${err.message}. Showing direct download link.`);
+
+                    const pdfIframe = document.getElementById("pdf-iframe");
+                    const downloadBtn = document.getElementById("download-btn");
+                    pdfIframe.src = `${downloadURL}?t=${Date.now()}`;
+                    downloadBtn.href = downloadURL;
+                    downloadBtn.download = "Merged_result.pdf";
+                    document.getElementById("pdf-viewer-section").classList.remove("hidden");
+                  }
+                })();
               } else {
                 log("❌ No valid roll numbers found. Preview not shown.");
               }
